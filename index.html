@@ -90,6 +90,13 @@ var form = document.getElementById('chat-form');
 
 function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; }
 
+function nearBottom() {
+  return window.innerHeight + window.scrollY >= document.body.scrollHeight - 160;
+}
+function scrollIfNearBottom() {
+  if (nearBottom()) window.scrollTo(0, document.body.scrollHeight);
+}
+
 function render(streamingText) {
   thread.replaceChildren();
   if (messages.length === 0 && streamingText === null) {
@@ -169,7 +176,18 @@ function send(q) {
   btn.textContent = 'עונה...';
   input.value = '';
   messages.push({ role: 'user', content: q });
-  render('');
+
+  // בנייה חד-פעמית: מסירים את מסך הפתיחה אם קיים, מוסיפים בועת משתמש ובועת תשובה -
+  // ובזמן הסטרימינג מעדכנים אך ורק את טקסט הבועה (בלי לבנות את הדף מחדש = בלי ריצוד)
+  var welcome = thread.querySelector('.welcome');
+  if (welcome) welcome.remove();
+  thread.appendChild(el('div', 'msg msg-user', q));
+  var botEl = el('div', 'msg msg-bot streaming');
+  var statusEl = el('span', 'status-line', 'מחפש בחוזרי המנכ״ל...');
+  botEl.appendChild(statusEl);
+  thread.appendChild(botEl);
+  window.scrollTo(0, document.body.scrollHeight);
+
   var text = '', sources = [], cited = [];
   fetch(API + '/chat', {
     method: 'POST',
@@ -186,27 +204,36 @@ function send(q) {
         buf += dec.decode(r.value, { stream: true });
         var lines = buf.split('\n');
         buf = lines.pop() || '';
+        var changed = false;
         for (var i = 0; i < lines.length; i++) {
           if (!lines[i].trim()) continue;
           var ev;
           try { ev = JSON.parse(lines[i]); } catch (e) { continue; }
-          if (ev.type === 'delta' && ev.text) text += ev.text;
+          if (ev.type === 'delta' && ev.text) { text += ev.text; changed = true; }
           else if (ev.type === 'sources') sources = ev.sources || [];
           else if (ev.type === 'citation' && ev.citation) cited.push(ev.citation.siduri);
           else if (ev.type === 'error') errMsg = ev.message || 'אירעה תקלה';
         }
-        render(text);
+        if (changed && text) {
+          botEl.textContent = text;
+          scrollIfNearBottom();
+        }
         return pump();
       });
     }
     function finish() {
       if (errMsg && !text) {
         messages.pop();
-        render(null);
+        botEl.previousSibling.remove();
+        botEl.remove();
+        if (messages.length === 0) render(null);
         notice(errMsg, res.status !== 429 && res.status !== 503);
       } else {
         messages.push({ role: 'assistant', content: text, sources: sources, cited: cited });
-        render(null);
+        botEl.classList.remove('streaming');
+        botEl.textContent = text;
+        if (sources.length) botEl.appendChild(sourcesBlock(sources, cited));
+        scrollIfNearBottom();
       }
       busy = false;
       btn.disabled = false;
@@ -216,7 +243,9 @@ function send(q) {
     return pump();
   }).catch(function () {
     messages.pop();
-    render(null);
+    botEl.previousSibling.remove();
+    botEl.remove();
+    if (messages.length === 0) render(null);
     notice('שגיאת רשת - בדקו את החיבור ונסו שוב', true);
     busy = false;
     btn.disabled = false;
